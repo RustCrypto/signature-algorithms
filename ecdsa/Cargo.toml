@@ -18,6 +18,8 @@ der = { version = "0.3", optional = true, features = ["big-uint"] }
 elliptic-curve = { version = "0.9.11", default-features = false }
 hmac = { version = "0.10", optional = true, default-features = false }
 signature = { version = ">= 1.3.0, < 1.4.0", default-features = false, features = ["rand-preview"] }
+rfc6979 = {path = "../rfc6979" }
+bitvec = { version = "0.20.0", default-features = false }
 
 [dev-dependencies]
 elliptic-curve = { version = "0.9", default-features = false, features = ["dev"] }

@@ -4,16 +4,17 @@
 //! <https://tools.ietf.org/html/rfc6979#section-3>
 
 use crate::hazmat::FromDigest;
+use bitvec::prelude::*;
 use elliptic_curve::{
-    ff::PrimeField,
-    generic_array::GenericArray,
+    ff::{Field, PrimeField},
     ops::Invert,
     weierstrass::Curve,
     zeroize::{Zeroize, Zeroizing},
     FieldBytes, NonZeroScalar, ProjectiveArithmetic, Scalar,
 };
-use hmac::{Hmac, Mac, NewMac};
 use signature::digest::{BlockInput, FixedOutput, Reset, Update};
+
+use ::rfc6979::KGenerator;
 
 /// Generate ephemeral scalar `k` from the secret scalar and a digest of the
 /// input message.
@@ -28,79 +29,44 @@ where
     Scalar<C>:
         PrimeField<Repr = FieldBytes<C>> + FromDigest<C> + Invert<Output = Scalar<C>> + Zeroize,
 {
-    let mut x = secret_scalar.to_repr();
-    let h1 = Scalar::<C>::from_digest(msg_digest).to_repr();
-    let mut hmac_drbg = HmacDrbg::<D>::new(&x, &h1, additional_data);
+    let bits_to_bytes = |b: elliptic_curve::ScalarBits<C>| {
+        // make byte buffer of the right size
+        let mut tmp = FieldBytes::<C>::default();
+        // convert bitslice from internal repr based on u32 or u64 to one based on u8
+        tmp.as_mut_slice()
+            .view_bits_mut::<Lsb0>()
+            .clone_from_bitslice(b.as_bitslice());
+        // convert to big endian
+        tmp.reverse();
+        tmp
+    };
+
+    // Verify that values roundtrip through bits_to_bytes and from_repr as expected.
+    // The from_repr interface does not guarantee big endian interpretation, and if it is not
+    // as expected the generated value may not have the required entropy.
+    let one = Scalar::<C>::one();
+    let one_bytes = bits_to_bytes(one.to_le_bits());
+    assert!(
+        one_bytes[one_bytes.len() - 1] == 1 && Scalar::<C>::from_repr(one_bytes) == Some(one),
+        "curve repr not as expected"
+    );
+
+    // Convert inputs to big endian byte representation
+    let modulus = bits_to_bytes(Scalar::<C>::char_le_bits());
+    let h1 = bits_to_bytes(Scalar::<C>::from_digest(msg_digest).to_le_bits());
+    let mut x = bits_to_bytes(secret_scalar.to_le_bits());
+
+    let mut gen = KGenerator::<D, _>::new(&modulus, &x, &h1, additional_data);
     x.zeroize();
 
     loop {
+        // Generate value less than the modulus according to RFC6979
         let mut tmp = FieldBytes::<C>::default();
-        hmac_drbg.generate_into(&mut tmp);
+        gen.generate_into(&mut tmp);
+
         if let Some(k) = NonZeroScalar::from_repr(tmp) {
             return Zeroizing::new(k);
         }
-    }
-}
-
-/// Internal implementation of `HMAC_DRBG` as described in NIST SP800-90A:
-/// <https://csrc.nist.gov/publications/detail/sp/800-90a/rev-1/final>
-///
-/// This is a HMAC-based deterministic random bit generator used internally
-/// to compute a deterministic ECDSA ephemeral scalar `k`.
-// TODO(tarcieri): use `hmac-drbg` crate when sorpaas/rust-hmac-drbg#3 is merged
-struct HmacDrbg<D>
-where
-    D: BlockInput + FixedOutput + Clone + Default + Reset + Update,
-{
-    /// HMAC key `K` (see RFC 6979 Section 3.2.c)
-    k: Hmac<D>,
-
-    /// Chaining value `V` (see RFC 6979 Section 3.2.c)
-    v: GenericArray<u8, D::OutputSize>,
-}
-
-impl<D> HmacDrbg<D>
-where
-    D: BlockInput + FixedOutput + Clone + Default + Reset + Update,
-{
-    /// Initialize `HMAC_DRBG`
-    pub fn new(entropy_input: &[u8], nonce: &[u8], additional_data: &[u8]) -> Self {
-        let mut k = Hmac::new(&Default::default());
-        let mut v = GenericArray::default();
-
-        for b in &mut v {
-            *b = 0x01;
-        }
-
-        for i in 0..=1 {
-            k.update(&v);
-            k.update(&[i]);
-            k.update(entropy_input);
-            k.update(nonce);
-            k.update(additional_data);
-            k = Hmac::new_varkey(&k.finalize().into_bytes()).unwrap();
-
-            // Steps 3.2.e,g: v = HMAC_k(v)
-            k.update(&v);
-            v = k.finalize_reset().into_bytes();
-        }
-
-        Self { k, v }
-    }
-
-    /// Get the next `HMAC_DRBG` output
-    pub fn generate_into(&mut self, out: &mut [u8]) {
-        for out_chunk in out.chunks_mut(self.v.len()) {
-            self.k.update(&self.v);
-            self.v = self.k.finalize_reset().into_bytes();
-            out_chunk.copy_from_slice(&self.v[..out_chunk.len()]);
-        }
-
-        self.k.update(&self.v);
-        self.k.update(&[0x00]);
-        self.k = Hmac::new_varkey(&self.k.finalize_reset().into_bytes()).unwrap();
-        self.k.update(&self.v);
-        self.v = self.k.finalize_reset().into_bytes();
     }
 }
 

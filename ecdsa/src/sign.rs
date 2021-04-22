@@ -4,7 +4,7 @@
 
 use crate::{
     hazmat::{DigestPrimitive, FromDigest, SignPrimitive},
-    rfc6979, Error, Signature, SignatureSize,
+    Error, Signature, SignatureSize,
 };
 use elliptic_curve::{
     ff::PrimeField, generic_array::ArrayLength, ops::Invert, subtle::ConstantTimeEq,
@@ -128,7 +128,7 @@ where
     /// computed using the algorithm described in RFC 6979 (Section 3.2):
     /// <https://tools.ietf.org/html/rfc6979#section-3>
     fn try_sign_digest(&self, digest: D) -> Result<Signature<C>, Error> {
-        let k = rfc6979::generate_k(self.inner.secret_scalar(), digest.clone(), &[]);
+        let k = crate::rfc6979::generate_k(self.inner.secret_scalar(), digest.clone(), &[]);
         let msg_scalar = Scalar::<C>::from_digest(digest);
 
         self.inner
@@ -175,7 +175,8 @@ where
         let mut added_entropy = FieldBytes::<C>::default();
         rng.fill_bytes(&mut added_entropy);
 
-        let k = rfc6979::generate_k(self.inner.secret_scalar(), digest.clone(), &added_entropy);
+        let k =
+            crate::rfc6979::generate_k(self.inner.secret_scalar(), digest.clone(), &added_entropy);
         let msg_scalar = Scalar::<C>::from_digest(digest);
 
         self.inner
